@@ -15,6 +15,7 @@ Color_Off='\033[0m'       # Text Reset
 
 Red='\033[0;31m'          # Red
 Blue='\033[0;34m'         # Blue
+Yellow='\033[0;33m'       # Yellow
 
 server=""
 token=""
@@ -23,6 +24,7 @@ usage() {
  echo "Usage: $0 [OPTIONS]"
  echo "Colors:"
  echo -e "${Red} ERROR" 
+ echo -e "${Yellow} WARNING"
  echo -e "${Blue} INFO ${Color_Off}"
  echo "Options:"
  echo " -h, --help            Display this help message"
@@ -79,6 +81,8 @@ case "$(lsb_release -is)" in
         apt update && apt upgrade -y
         echo -e "${Blue}INSTALL CURL${Color_Off}"
         apt install curl -y
+        echo -e "${Blue}INSTALL DOCKER,${Yellow} REMEMBER USE AN MTU > 1400 MAY CAUSE PROBLEM ON PULL IMAGES THIS CAN STOP K3S FROM CREATE CONTAINER${Color_Off}"
+        sh <(curl -fsSL https://get.docker.com)
         echo -e "${Blue}INSTALL OPEN-ISCSID${Color_Off}"
         apt-get install open-iscsi -y
         modprobe iscsi_tcp
