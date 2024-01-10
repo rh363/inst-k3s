@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+#inst-k3s-master.sh V1.0
+#Author: RH363
+#Date: 10/01/2024
+
+ROOT_UID=0                                                                                                   
+USER_UID=$(id -u)                                                                                            
+ERR_NOTROOT=86
+ERR_INST_LONGHORN=90
+ERR_INST_METALLB=91
+ERR_INV_REPLICA=92
+ERR_INV_FILESYSTEM=93
+ERR_INV_OPTION=94
+
+# Regular Colors
+Color_Off='\033[0m'       # Text Reset
+
+Red='\033[0;31m'          # Red
+Yellow='\033[0;33m'       # Yellow
+Blue='\033[0;34m'         # Blue
+
+
+filesystem="xfs"
+replica=2
+
+usage() {
+ echo "Usage: $0 [OPTIONS]"
+ echo "Colors:"
+ echo -e "${Red} ERROR" 
+ echo -e "${Yellow} WARNING"
+ echo -e "${Blue} INFO ${Color_Off}"
+ echo "Options:"
+ echo " -h, --help            Display this help message"
+ echo " -r --replica          REPLICA Specify storageclass replica number"
+ echo " -f, --filesystem      FILESYSTEM Specify storageclass filesystem type"
+}
+
+if [ "$USER_UID" -ne "$ROOT_UID" ]                                                                           
+    then
+    echo -e "${Red}MUST BE ROOT TO RUN THIS SCRIPT"
+    exit $ERR_NOTROOT
+    fi
+
+while (($# > 0)); do
+    case "$1" in
+        "-h"|"--help")
+            usage
+            exit
+        ;;
+        "-r"|"--replica")
+            if ! [[ $2 =~ ^[0-9]+$ ]]; then 
+                echo -e "${Red}ERROR: $2 INVALID NUMBER"
+                exit $ERR_INV_REPLICA
+            fi
+            replica=$2
+            shift 2
+        ;;
+        "-f"|"--filesystem")
+            case "$2" in
+                "xfs"|"ext4")
+                ;;
+                *)
+                    echo -e "${Red}ERROR: $2 NOT VALID FILESYSTEM"
+                    exit $ERR_INV_FILESYSTEM
+                ;;
+            esac
+            filesystem=$2
+            shift 2
+        ;;
+        *)
+            echo -e "${Red}INVALID OPTION: $1"
+            exit $ERR_INV_OPTION
+        ;;
+    esac
+done
+
+echo -e "${Blue}REPLICA NUMBER: $replica"
+echo -e "${Blue}FILESYSTEMTYPE: $filesystem"
+
+case "$(lsb_release -is)" in
+    "Ubuntu"|"Debian")
+        echo -e "${Blue}UBUNTU,DEBIAN ENVIROMENT DETECTED"
+        echo -e "${Blue}UPGRADE SYSTEM${Color_Off}"
+        apt update && apt upgrade -y
+        echo -e "${Blue}INSTALL CURL${Color_Off}"
+        apt install curl -y
+        echo -e "${Blue}INSTALL DOCKER,${Yellow} REMEMBER USE AN MTU > 1400 MAY CAUSE PROBLEM ON PULL IMAGES THIS CAN STOP K3S FROM CREATE CONTAINER${Color_Off}"
+        sh <(curl -fsSL https://get.docker.com)
+        echo -e "${Blue}INSTALL K3S${Color_Off}"
+        curl -sfL https://get.k3s.io | sh -s - --docker --disable=servicelb
+        echo -e "${Blue}INSTALL OPEN-ISCSID${Color_Off}"
+        apt-get install open-iscsi -y
+        modprobe iscsi_tcp
+        systemctl enable --now iscsid
+        systemctl restart iscsid
+        echo -e "${Blue}INSTALL NFS-COMMON${Color_Off}"
+        apt-get install nfs-common -y
+        echo -e "${Blue}DEPLOY LONGHORN${Color_Off}"
+        
+        if ! [ "$(kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.5.3/deploy/longhorn.yaml)"  ]; then
+            echo -e "${Red}CANT DEPLOY LONGHORN"
+            exit $ERR_INST_LONGHORN
+        fi
+        echo -e "${Blue}DEPLOY METALLB${Color_Off}"
+        if ! [ "$(kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml)" ]; then
+            echo -e "${Red}CANT DEPLOY METALLB"
+            exit $ERR_INST_METALLB
+        fi
+
+        echo -e "${Blue}START POD CHECK...${Color_Off}"
+        while true; do
+            listPods=$(kubectl get pod -ALL | awk 'NR>1{print $2}')
+            echo -e "\n\n\n--------------------"
+            check=0
+            for pod in $listPods; do
+                status=$(kubectl get pod -ALL | grep "$pod" | awk '{print $4}')
+                case "$status" in
+                    "Running"|"Completed")
+                    echo -e "${Blue}$pod  READY"
+                    ;;
+                    *)
+                        echo -e "${Red}$pod $status"
+                        check=$((check + 1))
+                    ;;
+                esac
+            done
+            if ((check > 0)); then
+                echo -e "\n${Yellow}$check POD NOT YET READY WAIT PLEASE...${Color_Off}"
+                sleep 10
+            else
+                break
+            fi
+        done
+        echo -e "\n${Blue}ALL POD ARE READY${Color_Off}"
+        echo -e "\n\n\n--------------------"
+        echo -e "${Blue}CONFIGURING LONGHORN STORAGE CLASS"
+        kubectl get cm -n longhorn-system longhorn-storageclass -o yaml > config.yaml
+        sed -i "s/fsType: \"ext4\"/fsType: \"$filesystem\"/g"  config.yaml
+        sed -i "s/numberOfReplicas: \"3\"/numberOfReplicas: \"$replica\"/g"  config.yaml
+        kubectl replace -f config.yaml
+        rm -rf config.yaml
+        echo -e "${Blue}LONGHORN STORAGE CLASS CONFIGURED${Color_Off}"
+    ;;
+    *)
+        echo -e "${Red}DISTRO NOT YET SUPPORTED${Color_Off}"
+    ;;
+esac
